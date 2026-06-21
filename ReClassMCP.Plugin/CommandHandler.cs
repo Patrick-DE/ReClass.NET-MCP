@@ -710,6 +710,83 @@ namespace ReClassMCP
             });
         }
 
+        private static bool TryParseAddressUlong(string input, out ulong value)
+        {
+            value = 0;
+            if (string.IsNullOrWhiteSpace(input))
+            {
+                return false;
+            }
+
+            input = input.Trim();
+            if (input.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            {
+                return ulong.TryParse(input.Substring(2), System.Globalization.NumberStyles.HexNumber, null, out value);
+            }
+
+            if (ulong.TryParse(input, out value))
+            {
+                return true;
+            }
+
+            return ulong.TryParse(input, System.Globalization.NumberStyles.HexNumber, null, out value);
+        }
+
+        private static bool TryParseUeVersionValue(Type enumType, string versionInput, out object enumValue)
+        {
+            enumValue = null;
+            if (enumType == null || string.IsNullOrWhiteSpace(versionInput))
+            {
+                return false;
+            }
+
+            versionInput = versionInput.Trim();
+
+            try
+            {
+                enumValue = Enum.Parse(enumType, versionInput, true);
+                return true;
+            }
+            catch
+            {
+            }
+
+            var normalized = versionInput
+                .Replace("_", string.Empty)
+                .Replace("-", string.Empty)
+                .Replace("+", "plus")
+                .Replace(".", string.Empty)
+                .Replace("<", "olderthan")
+                .ToLowerInvariant();
+
+            string targetName = null;
+            if (normalized == "olderthan425" || normalized == "lt425" || normalized == "pre425" || normalized == "ue4")
+            {
+                targetName = "OlderThan425";
+            }
+            else if (normalized == "425plus" || normalized == "ue425plus" || normalized == "ue425")
+            {
+                targetName = "UE425Plus";
+            }
+            else if (normalized == "5plus" || normalized == "ue5plus" || normalized == "ue5")
+            {
+                targetName = "UE5Plus";
+            }
+
+            if (targetName == null)
+            {
+                return false;
+            }
+
+            if (!Enum.GetNames(enumType).Contains(targetName))
+            {
+                return false;
+            }
+
+            enumValue = Enum.Parse(enumType, targetName, true);
+            return true;
+        }
+
         private JObject GetUeVersion()
         {
             try
@@ -720,23 +797,26 @@ namespace ReClassMCP
 
                 if (settingsType != null)
                 {
-                    var prop = settingsType.GetProperty("UnrealEngineVersion", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                    var propVersion = settingsType.GetProperty("UnrealEngineVersion", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
                     var propGNames = settingsType.GetProperty("GNamesAddress", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
                     var propGUObjectArray = settingsType.GetProperty("GUObjectArrayAddress", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-                    
-                    if (prop != null)
+
+                    if (propVersion != null)
                     {
-                        var value = prop.GetValue(null);
+                        var versionValue = propVersion.GetValue(null);
                         ulong gnames = propGNames != null ? (ulong)propGNames.GetValue(null) : 0;
                         ulong guobjectarray = propGUObjectArray != null ? (ulong)propGUObjectArray.GetValue(null) : 0;
-                        
-                        return Success(new JObject { 
-                            ["ue_version"] = value.ToString(),
+
+                        return Success(new JObject
+                        {
+                            ["ue_version"] = versionValue.ToString(),
+                            ["base_pointer"] = $"0x{gnames:X}",
                             ["gnames_address"] = $"0x{gnames:X}",
                             ["guobjectarray_address"] = $"0x{guobjectarray:X}"
                         });
                     }
                 }
+
                 return Error("UnrealEngineClassesPlugin not found or missing PluginSettings");
             }
             catch (Exception ex)
@@ -747,9 +827,11 @@ namespace ReClassMCP
 
         private JObject SetUeVersion(JObject args)
         {
-            var versionStr = args["version"]?.ToString();
-            if (string.IsNullOrEmpty(versionStr))
+            var versionStr = args["version"]?.ToString() ?? args["ue_version"]?.ToString();
+            if (string.IsNullOrWhiteSpace(versionStr))
+            {
                 return Error("Missing 'version' parameter");
+            }
 
             try
             {
@@ -762,19 +844,16 @@ namespace ReClassMCP
                     var prop = settingsType.GetProperty("UnrealEngineVersion", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
                     if (prop != null)
                     {
-                        var enumType = prop.PropertyType;
-                        try
+                        if (!TryParseUeVersionValue(prop.PropertyType, versionStr, out var parsedValue))
                         {
-                            var parsedValue = Enum.Parse(enumType, versionStr, true);
-                            prop.SetValue(null, parsedValue);
-                            return Success(new JObject { ["ue_version"] = parsedValue.ToString() });
+                            return Error($"Invalid version value: {versionStr}. Expected one of: OlderThan425, UE425Plus, UE5Plus (or aliases like '<4.25', '4.25+', '5+').");
                         }
-                        catch
-                        {
-                            return Error($"Invalid version value: {versionStr}. Expected UE4 or UE5.");
-                        }
+
+                        prop.SetValue(null, parsedValue);
+                        return GetUeVersion();
                     }
                 }
+
                 return Error("UnrealEngineClassesPlugin not found or missing PluginSettings");
             }
             catch (Exception ex)
@@ -786,7 +865,9 @@ namespace ReClassMCP
         private JObject SetUeSettings(JObject args)
         {
             var gnamesStr = args["gnames_address"]?.ToString();
+            var basePointerStr = args["base_pointer"]?.ToString() ?? args["basepointer"]?.ToString();
             var guobjectarrayStr = args["guobjectarray_address"]?.ToString();
+            var versionStr = args["version"]?.ToString() ?? args["ue_version"]?.ToString();
 
             try
             {
@@ -796,27 +877,44 @@ namespace ReClassMCP
 
                 if (settingsType != null)
                 {
+                    var propVersion = settingsType.GetProperty("UnrealEngineVersion", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
                     var propGNames = settingsType.GetProperty("GNamesAddress", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
                     var propGUObjectArray = settingsType.GetProperty("GUObjectArrayAddress", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-                    
-                    if (propGNames != null && !string.IsNullOrEmpty(gnamesStr))
+
+                    var effectiveGNames = string.IsNullOrWhiteSpace(gnamesStr) ? basePointerStr : gnamesStr;
+                    if (propGNames != null && !string.IsNullOrWhiteSpace(effectiveGNames))
                     {
-                        if (gnamesStr.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-                            propGNames.SetValue(null, Convert.ToUInt64(gnamesStr.Substring(2), 16));
-                        else
-                            propGNames.SetValue(null, Convert.ToUInt64(gnamesStr));
+                        if (!TryParseAddressUlong(effectiveGNames, out var gnames))
+                        {
+                            return Error($"Invalid gnames/base_pointer address: {effectiveGNames}");
+                        }
+
+                        propGNames.SetValue(null, gnames);
                     }
 
-                    if (propGUObjectArray != null && !string.IsNullOrEmpty(guobjectarrayStr))
+                    if (propGUObjectArray != null && !string.IsNullOrWhiteSpace(guobjectarrayStr))
                     {
-                        if (guobjectarrayStr.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-                            propGUObjectArray.SetValue(null, Convert.ToUInt64(guobjectarrayStr.Substring(2), 16));
-                        else
-                            propGUObjectArray.SetValue(null, Convert.ToUInt64(guobjectarrayStr));
+                        if (!TryParseAddressUlong(guobjectarrayStr, out var guobj))
+                        {
+                            return Error($"Invalid guobjectarray_address: {guobjectarrayStr}");
+                        }
+
+                        propGUObjectArray.SetValue(null, guobj);
                     }
-                    
-                    return GetUeVersion(); // Return updated settings
+
+                    if (propVersion != null && !string.IsNullOrWhiteSpace(versionStr))
+                    {
+                        if (!TryParseUeVersionValue(propVersion.PropertyType, versionStr, out var parsedVersion))
+                        {
+                            return Error($"Invalid version value: {versionStr}. Expected one of: OlderThan425, UE425Plus, UE5Plus (or aliases like '<4.25', '4.25+', '5+').");
+                        }
+
+                        propVersion.SetValue(null, parsedVersion);
+                    }
+
+                    return GetUeVersion();
                 }
+
                 return Error("UnrealEngineClassesPlugin not found or missing PluginSettings");
             }
             catch (Exception ex)
