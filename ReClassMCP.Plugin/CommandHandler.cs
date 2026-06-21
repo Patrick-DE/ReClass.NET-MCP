@@ -72,6 +72,15 @@ namespace ReClassMCP
                     case "get_process_info":
                         return GetProcessInfo();
 
+                    case "get_ue_version":
+                        return GetUeVersion();
+
+                    case "set_ue_version":
+                        return SetUeVersion(args);
+
+                    case "set_ue_settings":
+                        return SetUeSettings(args);
+
                     default:
                         return Error($"Unknown command: {command}");
                 }
@@ -235,7 +244,8 @@ namespace ReClassMCP
             // Try by UUID
             if (Guid.TryParse(identifier, out var guid))
             {
-                classNode = project.Classes.FirstOrDefault(c => c.Uuid == guid);
+                var guidStr = guid.ToString();
+                classNode = project.Classes.FirstOrDefault(c => c.Uuid.ToString().Equals(guidStr, StringComparison.OrdinalIgnoreCase));
             }
 
             // Try by name
@@ -273,7 +283,8 @@ namespace ReClassMCP
 
             if (Guid.TryParse(classId, out var guid))
             {
-                classNode = project.Classes.FirstOrDefault(c => c.Uuid == guid);
+                var guidStr = guid.ToString();
+                classNode = project.Classes.FirstOrDefault(c => c.Uuid.ToString().Equals(guidStr, StringComparison.OrdinalIgnoreCase));
             }
 
             if (classNode == null)
@@ -478,7 +489,8 @@ namespace ReClassMCP
             ClassNode classNode = null;
             if (Guid.TryParse(classId, out var guid))
             {
-                classNode = project.Classes.FirstOrDefault(c => c.Uuid == guid);
+                var guidStr = guid.ToString();
+                classNode = project.Classes.FirstOrDefault(c => c.Uuid.ToString().Equals(guidStr, StringComparison.OrdinalIgnoreCase));
             }
             if (classNode == null)
             {
@@ -542,7 +554,8 @@ namespace ReClassMCP
             ClassNode classNode = null;
             if (Guid.TryParse(classId, out var guid))
             {
-                classNode = project.Classes.FirstOrDefault(c => c.Uuid == guid);
+                var guidStr = guid.ToString();
+                classNode = project.Classes.FirstOrDefault(c => c.Uuid.ToString().Equals(guidStr, StringComparison.OrdinalIgnoreCase));
             }
             if (classNode == null)
             {
@@ -590,7 +603,8 @@ namespace ReClassMCP
             ClassNode classNode = null;
             if (Guid.TryParse(classId, out var guid))
             {
-                classNode = project.Classes.FirstOrDefault(c => c.Uuid == guid);
+                var guidStr = guid.ToString();
+                classNode = project.Classes.FirstOrDefault(c => c.Uuid.ToString().Equals(guidStr, StringComparison.OrdinalIgnoreCase));
             }
             if (classNode == null)
             {
@@ -637,7 +651,8 @@ namespace ReClassMCP
             ClassNode classNode = null;
             if (Guid.TryParse(classId, out var guid))
             {
-                classNode = project.Classes.FirstOrDefault(c => c.Uuid == guid);
+                var guidStr = guid.ToString();
+                classNode = project.Classes.FirstOrDefault(c => c.Uuid.ToString().Equals(guidStr, StringComparison.OrdinalIgnoreCase));
             }
             if (classNode == null)
             {
@@ -693,6 +708,121 @@ namespace ReClassMCP
                 ["path"] = proc.Path,
                 ["is_valid"] = host.Process.IsValid
             });
+        }
+
+        private JObject GetUeVersion()
+        {
+            try
+            {
+                var settingsType = AppDomain.CurrentDomain.GetAssemblies()
+                    .SelectMany(a => { try { return a.GetTypes(); } catch { return new Type[0]; } })
+                    .FirstOrDefault(t => t.FullName == "UnrealEngineClassesPlugin.PluginSettings");
+
+                if (settingsType != null)
+                {
+                    var prop = settingsType.GetProperty("UnrealEngineVersion", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                    var propGNames = settingsType.GetProperty("GNamesAddress", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                    var propGUObjectArray = settingsType.GetProperty("GUObjectArrayAddress", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                    
+                    if (prop != null)
+                    {
+                        var value = prop.GetValue(null);
+                        ulong gnames = propGNames != null ? (ulong)propGNames.GetValue(null) : 0;
+                        ulong guobjectarray = propGUObjectArray != null ? (ulong)propGUObjectArray.GetValue(null) : 0;
+                        
+                        return Success(new JObject { 
+                            ["ue_version"] = value.ToString(),
+                            ["gnames_address"] = $"0x{gnames:X}",
+                            ["guobjectarray_address"] = $"0x{guobjectarray:X}"
+                        });
+                    }
+                }
+                return Error("UnrealEngineClassesPlugin not found or missing PluginSettings");
+            }
+            catch (Exception ex)
+            {
+                return Error($"Failed to get UE version: {ex.Message}");
+            }
+        }
+
+        private JObject SetUeVersion(JObject args)
+        {
+            var versionStr = args["version"]?.ToString();
+            if (string.IsNullOrEmpty(versionStr))
+                return Error("Missing 'version' parameter");
+
+            try
+            {
+                var settingsType = AppDomain.CurrentDomain.GetAssemblies()
+                    .SelectMany(a => { try { return a.GetTypes(); } catch { return new Type[0]; } })
+                    .FirstOrDefault(t => t.FullName == "UnrealEngineClassesPlugin.PluginSettings");
+
+                if (settingsType != null)
+                {
+                    var prop = settingsType.GetProperty("UnrealEngineVersion", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                    if (prop != null)
+                    {
+                        var enumType = prop.PropertyType;
+                        try
+                        {
+                            var parsedValue = Enum.Parse(enumType, versionStr, true);
+                            prop.SetValue(null, parsedValue);
+                            return Success(new JObject { ["ue_version"] = parsedValue.ToString() });
+                        }
+                        catch
+                        {
+                            return Error($"Invalid version value: {versionStr}. Expected UE4 or UE5.");
+                        }
+                    }
+                }
+                return Error("UnrealEngineClassesPlugin not found or missing PluginSettings");
+            }
+            catch (Exception ex)
+            {
+                return Error($"Failed to set UE version: {ex.Message}");
+            }
+        }
+
+        private JObject SetUeSettings(JObject args)
+        {
+            var gnamesStr = args["gnames_address"]?.ToString();
+            var guobjectarrayStr = args["guobjectarray_address"]?.ToString();
+
+            try
+            {
+                var settingsType = AppDomain.CurrentDomain.GetAssemblies()
+                    .SelectMany(a => { try { return a.GetTypes(); } catch { return new Type[0]; } })
+                    .FirstOrDefault(t => t.FullName == "UnrealEngineClassesPlugin.PluginSettings");
+
+                if (settingsType != null)
+                {
+                    var propGNames = settingsType.GetProperty("GNamesAddress", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                    var propGUObjectArray = settingsType.GetProperty("GUObjectArrayAddress", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                    
+                    if (propGNames != null && !string.IsNullOrEmpty(gnamesStr))
+                    {
+                        if (gnamesStr.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                            propGNames.SetValue(null, Convert.ToUInt64(gnamesStr.Substring(2), 16));
+                        else
+                            propGNames.SetValue(null, Convert.ToUInt64(gnamesStr));
+                    }
+
+                    if (propGUObjectArray != null && !string.IsNullOrEmpty(guobjectarrayStr))
+                    {
+                        if (guobjectarrayStr.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                            propGUObjectArray.SetValue(null, Convert.ToUInt64(guobjectarrayStr.Substring(2), 16));
+                        else
+                            propGUObjectArray.SetValue(null, Convert.ToUInt64(guobjectarrayStr));
+                    }
+                    
+                    return GetUeVersion(); // Return updated settings
+                }
+                return Error("UnrealEngineClassesPlugin not found or missing PluginSettings");
+            }
+            catch (Exception ex)
+            {
+                return Error($"Failed to set UE settings: {ex.Message}");
+            }
         }
 
         private Type GetNodeType(string typeName)
@@ -751,6 +881,22 @@ namespace ReClassMCP
                 var baseName = typeName.Substring(0, typeName.Length - 4);
                 if (nodeTypes.TryGetValue(baseName, out type))
                     return type;
+            }
+
+            // Try reflection for plugin nodes
+            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                try
+                {
+                    var reflectedType = assembly.GetTypes().FirstOrDefault(t => 
+                        typeof(BaseNode).IsAssignableFrom(t) && 
+                        (t.Name.Equals(typeName, StringComparison.OrdinalIgnoreCase) || 
+                         t.Name.Equals(typeName + "Node", StringComparison.OrdinalIgnoreCase)));
+                         
+                    if (reflectedType != null)
+                        return reflectedType;
+                }
+                catch { }
             }
 
             return null;
